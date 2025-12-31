@@ -180,12 +180,12 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") return new Response(null, { headers });
 
   // Check secret key from URL path /api/mcp/[key]
-  const secretKey = process.env.MCP_SECRET_KEY;
+  const secretKey = process.env.MCP_SECRET_KEY?.trim();
   if (secretKey) {
     const url = new URL(req.url);
-    const pathKey = url.pathname.split("/").pop();
+    const pathKey = url.pathname.split("/").pop()?.trim();
     if (pathKey !== secretKey) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
+      return new Response(JSON.stringify({ error: "Unauthorized", debug: { pathKey, secretKeyLen: secretKey.length } }), { status: 401, headers });
     }
   }
 
