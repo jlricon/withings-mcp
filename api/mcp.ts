@@ -173,11 +173,21 @@ export default async function handler(req: Request): Promise<Response> {
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Content-Type": "application/json",
   };
 
   if (req.method === "OPTIONS") return new Response(null, { headers });
+
+  // Check API key
+  const apiKey = process.env.MCP_API_KEY;
+  if (apiKey) {
+    const authHeader = req.headers.get("Authorization");
+    const providedKey = authHeader?.replace("Bearer ", "");
+    if (providedKey !== apiKey) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
+    }
+  }
 
   if (req.method === "GET") {
     return new Response(
