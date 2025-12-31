@@ -5,7 +5,7 @@ import {
   getWeightMeasurements,
   type WithingsConfig,
   type TokenResponse,
-} from "../src/withings.js";
+} from "../../src/withings.js";
 
 const redis = Redis.fromEnv();
 const TOKEN_KEY = "withings_tokens";
@@ -179,13 +179,12 @@ export default async function handler(req: Request): Promise<Response> {
 
   if (req.method === "OPTIONS") return new Response(null, { headers });
 
-  // Check secret key (via query param or header)
+  // Check secret key from URL path /api/mcp/[key]
   const secretKey = process.env.MCP_SECRET_KEY;
   if (secretKey) {
     const url = new URL(req.url);
-    const queryKey = url.searchParams.get("key");
-    const headerKey = req.headers.get("Authorization")?.replace("Bearer ", "");
-    if (queryKey !== secretKey && headerKey !== secretKey) {
+    const pathKey = url.pathname.split("/").pop();
+    if (pathKey !== secretKey) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
     }
   }
