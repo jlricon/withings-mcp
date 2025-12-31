@@ -1,4 +1,4 @@
-import { put, head, del } from "@vercel/blob";
+import { Redis } from "@upstash/redis";
 import {
   getAuthorizationUrl,
   refreshAccessToken,
@@ -7,7 +7,8 @@ import {
   type TokenResponse,
 } from "../src/withings.js";
 
-const TOKEN_BLOB_NAME = "withings-tokens.json";
+const redis = Redis.fromEnv();
+const TOKEN_KEY = "withings_tokens";
 
 interface StoredTokens {
   accessToken: string;
@@ -17,16 +18,10 @@ interface StoredTokens {
 
 async function getTokens(): Promise<StoredTokens | null> {
   try {
-    // Try to fetch from blob
-    const blobUrl = process.env.BLOB_TOKEN_URL;
-    if (blobUrl) {
-      const res = await fetch(blobUrl);
-      if (res.ok) {
-        return await res.json();
-      }
-    }
+    const stored = await redis.get<StoredTokens>(TOKEN_KEY);
+    if (stored) return stored;
   } catch {
-    // Blob not available
+    // Redis not available
   }
 
   // Fall back to env vars
@@ -40,22 +35,13 @@ async function getTokens(): Promise<StoredTokens | null> {
   return null;
 }
 
-async function saveTokens(tokens: TokenResponse): Promise<string | null> {
+async function saveTokens(tokens: TokenResponse): Promise<void> {
   const stored: StoredTokens = {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
     expiresAt: Date.now() + tokens.expires_in * 1000,
   };
-  try {
-    const blob = await put(TOKEN_BLOB_NAME, JSON.stringify(stored), {
-      access: "public",
-      addRandomSuffix: false,
-    });
-    return blob.url;
-  } catch (e) {
-    console.error("Failed to save tokens:", e);
-    return null;
-  }
+  await redis.set(TOKEN_KEY, stored);
 }
 
 function getConfig(tokens?: StoredTokens | null): WithingsConfig {
@@ -175,8 +161,8 @@ async function handleToolCall(name: string, args: any): Promise<string> {
       if (!tokens) return "No tokens configured.";
       const config = getConfig(tokens);
       const newTokens = await refreshAccessToken(config);
-      const blobUrl = await saveTokens(newTokens);
-      return JSON.stringify({ message: "Token refreshed", blobUrl }, null, 2);
+      await saveTokens(newTokens);
+      return JSON.stringify({ message: "Token refreshed and saved to Redis" }, null, 2);
     }
     default:
       return `Unknown tool: ${name}`;
@@ -247,4 +233,4 @@ export default async function handler(req: Request): Promise<Response> {
   }
 }
 
-export const config = { runtime: "nodejs" };
+export const config = { runtime: "edge" };
