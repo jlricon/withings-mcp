@@ -185,7 +185,7 @@ export default async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const pathKey = url.pathname.split("/").pop()?.trim();
     if (pathKey !== secretKey) {
-      return new Response(JSON.stringify({ error: "Unauthorized", debug: { pathKey, secretKeyLen: secretKey.length } }), { status: 401, headers });
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
     }
   }
 
