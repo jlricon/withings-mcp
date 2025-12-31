@@ -179,12 +179,13 @@ export default async function handler(req: Request): Promise<Response> {
 
   if (req.method === "OPTIONS") return new Response(null, { headers });
 
-  // Check API key
-  const apiKey = process.env.MCP_API_KEY;
-  if (apiKey) {
-    const authHeader = req.headers.get("Authorization");
-    const providedKey = authHeader?.replace("Bearer ", "");
-    if (providedKey !== apiKey) {
+  // Check secret key (via query param or header)
+  const secretKey = process.env.MCP_SECRET_KEY;
+  if (secretKey) {
+    const url = new URL(req.url);
+    const queryKey = url.searchParams.get("key");
+    const headerKey = req.headers.get("Authorization")?.replace("Bearer ", "");
+    if (queryKey !== secretKey && headerKey !== secretKey) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
     }
   }
