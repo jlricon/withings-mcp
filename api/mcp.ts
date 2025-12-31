@@ -1,4 +1,4 @@
-import { kv } from "@vercel/kv";
+import { put, head, del } from "@vercel/blob";
 import {
   getAuthorizationUrl,
   refreshAccessToken,
@@ -7,20 +7,26 @@ import {
   type TokenResponse,
 } from "../src/withings.js";
 
-const TOKEN_KEY = "withings_tokens";
+const TOKEN_BLOB_NAME = "withings-tokens.json";
 
 interface StoredTokens {
   accessToken: string;
   refreshToken: string;
-  expiresAt: number; // Unix timestamp
+  expiresAt: number;
 }
 
 async function getTokens(): Promise<StoredTokens | null> {
   try {
-    const stored = await kv.get<StoredTokens>(TOKEN_KEY);
-    if (stored) return stored;
+    // Try to fetch from blob
+    const blobUrl = process.env.BLOB_TOKEN_URL;
+    if (blobUrl) {
+      const res = await fetch(blobUrl);
+      if (res.ok) {
+        return await res.json();
+      }
+    }
   } catch {
-    // KV not configured, fall back to env
+    // Blob not available
   }
 
   // Fall back to env vars
@@ -28,22 +34,27 @@ async function getTokens(): Promise<StoredTokens | null> {
     return {
       accessToken: process.env.WITHINGS_ACCESS_TOKEN,
       refreshToken: process.env.WITHINGS_REFRESH_TOKEN,
-      expiresAt: 0, // Unknown, will refresh on first error
+      expiresAt: 0,
     };
   }
   return null;
 }
 
-async function saveTokens(tokens: TokenResponse): Promise<void> {
+async function saveTokens(tokens: TokenResponse): Promise<string | null> {
   const stored: StoredTokens = {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
     expiresAt: Date.now() + tokens.expires_in * 1000,
   };
   try {
-    await kv.set(TOKEN_KEY, stored);
-  } catch {
-    // KV not configured, tokens won't persist
+    const blob = await put(TOKEN_BLOB_NAME, JSON.stringify(stored), {
+      access: "public",
+      addRandomSuffix: false,
+    });
+    return blob.url;
+  } catch (e) {
+    console.error("Failed to save tokens:", e);
+    return null;
   }
 }
 
@@ -58,36 +69,32 @@ function getConfig(tokens?: StoredTokens | null): WithingsConfig {
 }
 
 async function ensureValidToken(): Promise<string | null> {
-  let tokens = await getTokens();
+  const tokens = await getTokens();
   if (!tokens) return null;
 
-  // Check if token is expired or about to expire (5 min buffer)
   const isExpired = tokens.expiresAt > 0 && tokens.expiresAt < Date.now() + 5 * 60 * 1000;
 
-  if (isExpired) {
+  if (isExpired && tokens.refreshToken) {
     const config = getConfig(tokens);
     try {
       const newTokens = await refreshAccessToken(config);
       await saveTokens(newTokens);
       return newTokens.access_token;
-    } catch (e) {
-      return null; // Refresh failed
+    } catch {
+      return null;
     }
   }
 
   return tokens.accessToken;
 }
 
-async function callWithAutoRefresh<T>(
-  fn: (accessToken: string) => Promise<T>
-): Promise<T> {
+async function callWithAutoRefresh<T>(fn: (accessToken: string) => Promise<T>): Promise<T> {
   let accessToken = await ensureValidToken();
   if (!accessToken) throw new Error("No valid access token. Please authorize first.");
 
   try {
     return await fn(accessToken);
   } catch (e: any) {
-    // If auth error, try refreshing once
     if (e.message?.includes("401") || e.message?.includes("invalid") || e.message?.includes("expired")) {
       const tokens = await getTokens();
       if (tokens?.refreshToken) {
@@ -107,9 +114,7 @@ const TOOLS = {
     description: "Get the Withings OAuth authorization URL",
     inputSchema: {
       type: "object",
-      properties: {
-        state: { type: "string", description: "Optional state parameter" },
-      },
+      properties: { state: { type: "string", description: "Optional state parameter" } },
     },
   },
   get_weight: {
@@ -140,10 +145,8 @@ async function handleToolCall(name: string, args: any): Promise<string> {
   switch (name) {
     case "get_auth_url": {
       const config = getConfig();
-      const url = getAuthorizationUrl(config, args.state || crypto.randomUUID());
-      return url;
+      return getAuthorizationUrl(config, args.state || crypto.randomUUID());
     }
-
     case "get_weight": {
       let startDate: Date | undefined;
       let endDate: Date | undefined;
@@ -155,35 +158,26 @@ async function handleToolCall(name: string, args: any): Promise<string> {
         if (args.start_date) startDate = new Date(args.start_date);
         if (args.end_date) endDate = new Date(args.end_date);
       }
-      const data = await callWithAutoRefresh((token) =>
-        getWeightMeasurements(token, { startDate, endDate })
-      );
+      const data = await callWithAutoRefresh((token) => getWeightMeasurements(token, { startDate, endDate }));
       return JSON.stringify(data, null, 2);
     }
-
     case "get_latest_weight": {
       const endDate = new Date();
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - 30);
-      const data = await callWithAutoRefresh((token) =>
-        getWeightMeasurements(token, { startDate, endDate })
-      );
+      const data = await callWithAutoRefresh((token) => getWeightMeasurements(token, { startDate, endDate }));
       if (data.length === 0) return "No measurements in last 30 days.";
-      const latest = data.sort(
-        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-      )[0];
+      const latest = data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
       return JSON.stringify(latest, null, 2);
     }
-
     case "refresh_token": {
       const tokens = await getTokens();
       if (!tokens) return "No tokens configured.";
       const config = getConfig(tokens);
       const newTokens = await refreshAccessToken(config);
-      await saveTokens(newTokens);
-      return JSON.stringify({ message: "Token refreshed successfully" }, null, 2);
+      const blobUrl = await saveTokens(newTokens);
+      return JSON.stringify({ message: "Token refreshed", blobUrl }, null, 2);
     }
-
     default:
       return `Unknown tool: ${name}`;
   }
@@ -197,9 +191,7 @@ export default async function handler(req: Request): Promise<Response> {
     "Content-Type": "application/json",
   };
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { headers });
 
   if (req.method === "GET") {
     return new Response(
@@ -222,7 +214,6 @@ export default async function handler(req: Request): Promise<Response> {
   try {
     const body = await req.json();
     const { method, params, id } = body;
-
     let result: any;
 
     switch (method) {
@@ -233,16 +224,13 @@ export default async function handler(req: Request): Promise<Response> {
           serverInfo: { name: "withings", version: "1.0.0" },
         };
         break;
-
       case "tools/list":
         result = { tools: Object.values(TOOLS) };
         break;
-
       case "tools/call":
         const toolResult = await handleToolCall(params.name, params.arguments || {});
         result = { content: [{ type: "text", text: toolResult }] };
         break;
-
       default:
         return new Response(
           JSON.stringify({ jsonrpc: "2.0", error: { code: -32601, message: "Method not found" }, id }),
@@ -259,4 +247,4 @@ export default async function handler(req: Request): Promise<Response> {
   }
 }
 
-export const config = { runtime: "edge" };
+export const config = { runtime: "nodejs" };

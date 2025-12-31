@@ -84,5 +84,5 @@ WITHINGS_REFRESH_TOKEN=${tokens.refresh_token}</code></pre>
 }
 
 export const config = {
-  runtime: "edge",
+  runtime: "nodejs",
 };
