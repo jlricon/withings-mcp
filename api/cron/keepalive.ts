@@ -18,7 +18,7 @@ interface StoredTokens {
 
 export const GET = async (req: Request) => {
   // Verify this is called by Vercel Cron
-  if (req.headers.get("authorization") !== `Bearer ${process.env.MCP_SECRET_KEY}`) {
+  if (req.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
     return new Response("Unauthorized", { status: 401 });
   }
 
